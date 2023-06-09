@@ -36,8 +36,9 @@ export default class Inputs {
   }
 
   animateToCoordinates(mode, coords) {
-    const { origin, destination, routePadding } = this.store.getState();
-    
+    const { origin, destination, routePadding,flyTo } = this.store.getState();
+    if (!flyTo) return;
+
     if (origin.geometry &&
         destination.geometry &&
         !isEqual(origin.geometry, destination.geometry)) {

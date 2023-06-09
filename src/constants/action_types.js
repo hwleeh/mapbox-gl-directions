@@ -14,3 +14,5 @@ export const ORIGIN_FROM_COORDINATES = 'ORIGIN_FROM_COORDINATES';
 export const ROUTE_INDEX = 'ROUTE_INDEX';
 export const SET_OPTIONS = 'SET_OPTIONS';
 export const WAYPOINTS = 'WAYPOINTS';
+
+export const READY = 'READY';

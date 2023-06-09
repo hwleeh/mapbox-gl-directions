@@ -1,4 +1,5 @@
 'use strict';
+
 var mapboxgl = require('mapbox-gl');
 var insertCss = require('insert-css');
 var fs = require('fs');

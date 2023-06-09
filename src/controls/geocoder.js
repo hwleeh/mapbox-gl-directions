@@ -46,6 +46,7 @@ export default class Geocoder {
       var selected = this._typeahead.selected;
       if (selected) {
         if (this.options.flyTo) {
+          console.log('flyTo');
           if (selected.bbox && selected.context && selected.context.length <= 3 ||
               selected.bbox && !selected.context) {
             var bbox = selected.bbox;

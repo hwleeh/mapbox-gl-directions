@@ -1,6 +1,6 @@
-import { createStore, applyMiddleware, bindActionCreators } from 'redux';
+import {createStore, applyMiddleware, bindActionCreators} from 'redux';
 import thunk from 'redux-thunk';
-import { decode } from '@mapbox/polyline';
+import {decode} from '@mapbox/polyline';
 import utils from './utils';
 import rootReducer from './reducers';
 
@@ -14,6 +14,7 @@ import directionsStyle from './directions_style';
 // Controls
 import Inputs from './controls/inputs';
 import Instructions from './controls/instructions';
+import {clearOrigin, onLoad} from './actions';
 
 /**
  * The Directions control
@@ -41,6 +42,10 @@ import Instructions from './controls/instructions';
  * @param {Boolean} [options.flyTo=true] If false, animating the map to a selected result is disabled.
  * @param {String} [options.exclude=null] Exclude certain road types from routing. The default is to not exclude anything. Search for `exclude` in `optional parameters`: https://docs.mapbox.com/api/navigation/#retrieve-directions
  * @param {number | PaddingOptions} [options.routePadding=80] Specify padding surrounding route. A single number of pixels or a [PaddingOptions](https://docs.mapbox.com/mapbox-gl-js/api/#paddingoptions) object.
+ *
+ * @param {Boolean} [options.forceStart=false] If true, the plugin will automatically set the origin to the user's current location.
+ * @param {Boolean} [options.plotRoute=true] If false, the route won't be plotted automatically on the map.
+ *
  * @example
  * var MapboxDirections = require('../src/index');
  * var directions = new MapboxDirections({
@@ -55,507 +60,547 @@ import Instructions from './controls/instructions';
  */
 export default class MapboxDirections {
 
-  constructor(options) {
-    this.actions = bindActionCreators(actions, store.dispatch);
-    this.actions.setOptions(options || {});
-    this.options = options || {};
+    constructor(options) {
+        this.actions = bindActionCreators(actions, store.dispatch);
+        this.actions.setOptions(options || {});
+        this.options = options || {};
 
-    this.onDragDown = this._onDragDown.bind(this);
-    this.onDragMove = this._onDragMove.bind(this);
-    this.onDragUp = this._onDragUp.bind(this);
-    this.move = this._move.bind(this);
-    this.onClick = this._clickHandler().bind(this);
-  }
-
-  onAdd(map) {
-    this._map = map;
-
-    const { controls } = store.getState();
-
-    var el = this.container = document.createElement('div');
-    el.className = 'mapboxgl-ctrl-directions mapboxgl-ctrl';
-
-    // Add controls to the page
-    const inputEl = document.createElement('div');
-    inputEl.className = 'directions-control directions-control-inputs';
-    new Inputs(inputEl, store, this.actions, this._map);
-
-    const directionsEl = document.createElement('div');
-    directionsEl.className = 'directions-control directions-control-instructions';
-
-    new Instructions(directionsEl, store, {
-      hoverMarker: this.actions.hoverMarker,
-      setRouteIndex: this.actions.setRouteIndex
-    }, this._map);
-
-    if (controls.inputs) el.appendChild(inputEl);
-    if (controls.instructions) el.appendChild(directionsEl);
-
-    this.subscribedActions();
-    if (this._map.loaded()) this.mapState()
-    else this._map.on('load', () => this.mapState());
-
-    return el;
-  }
-
-  /**
-   * Removes the control from the map it has been added to. This is called by `map.removeControl`,
-   * which is the recommended method to remove controls.
-   *
-   * @returns {Control} `this`
-   */
-  onRemove(map) {
-    this.container.parentNode.removeChild(this.container);
-    this.removeRoutes();
-    map.off('mousedown', this.onDragDown);
-    map.off('mousemove', this.move);
-    map.off('touchstart', this.onDragDown);
-    map.off('touchstart', this.move);
-    map.off('click', this.onClick);
-    if (this.storeUnsubscribe) {
-      this.storeUnsubscribe();
-      delete this.storeUnsubscribe;
+        this.onDragDown = this._onDragDown.bind(this);
+        this.onDragMove = this._onDragMove.bind(this);
+        this.onDragUp = this._onDragUp.bind(this);
+        this.move = this._move.bind(this);
+        this.onClick = this._clickHandler().bind(this);
     }
-    directionsStyle.forEach((layer) => {
-      if (map.getLayer(layer.id)) map.removeLayer(layer.id);
-    });
 
-    if (map.getSource('directions')) map.removeSource('directions');
+    onAdd(map) {
+        this._map = map;
 
-    this._map = null;
-    return this;
-  }
+        const {controls} = store.getState();
 
-  mapState() {
-    const { profile, alternatives, congestion, styles, interactive, compile } = store.getState();
+        var el = this.container = document.createElement('div');
+        el.className = 'mapboxgl-ctrl-directions mapboxgl-ctrl';
 
-    // Emit any default or option set config
-    this.actions.eventEmit('profile', { profile });
+        // Add controls to the page
+        const inputEl = document.createElement('div');
+        inputEl.className = 'directions-control directions-control-inputs';
+        new Inputs(inputEl, store, this.actions, this._map);
 
-    const geojson = {
-      type: 'geojson',
-      data: {
-        type: 'FeatureCollection',
-        features: []
-      }
-    };
+        const directionsEl = document.createElement('div');
+        directionsEl.className = 'directions-control directions-control-instructions';
 
-    // Add and set data theme layer/style
-    this._map.addSource('directions', geojson);
+        new Instructions(directionsEl, store, {
+            hoverMarker  : this.actions.hoverMarker,
+            setRouteIndex: this.actions.setRouteIndex
+        }, this._map);
 
-    // Add direction specific styles to the map
-    if (styles && styles.length) styles.forEach((style) => this._map.addLayer(style));
-    directionsStyle.forEach((style) => {
-      // only add the default style layer if a custom layer wasn't provided
-      if (!this._map.getLayer(style.id)) this._map.addLayer(style);
-    });
+        if (controls.inputs) el.appendChild(inputEl);
+        if (controls.instructions) el.appendChild(directionsEl);
 
+        this.subscribedActions();
 
-    if (interactive) {
-      this._map.on('mousedown', this.onDragDown);
-      this._map.on('mousemove', this.move);
-      this._map.on('click', this.onClick);
+        if (this.options.forceStart) this.mapState();
+        else if (this._map.loaded()) this.mapState();
+        else this._map.on('load', () => this.mapState());
 
-      this._map.on('touchstart', this.move);
-      this._map.on('touchstart', this.onDragDown);
+        this.actions.onLoad();
+
+        return el;
     }
-  }
 
-  subscribedActions() {
-    this.storeUnsubscribe = store.subscribe(() => {
-      const {
-        origin,
-        destination,
-        hoverMarker,
-        directions,
-        routeIndex
-      } = store.getState();
+    /**
+     * Removes the control from the map it has been added to. This is called by `map.removeControl`,
+     * which is the recommended method to remove controls.
+     *
+     * @returns {Control} `this`
+     */
+    onRemove(map) {
+        this.container.parentNode.removeChild(this.container);
+        this.removeRoutes();
+        map.off('mousedown', this.onDragDown);
+        map.off('mousemove', this.move);
+        map.off('touchstart', this.onDragDown);
+        map.off('touchstart', this.move);
+        map.off('click', this.onClick);
+        if (this.storeUnsubscribe) {
+            this.storeUnsubscribe();
+            delete this.storeUnsubscribe;
+        }
+        directionsStyle.forEach((layer) => {
+            if (map.getLayer(layer.id)) map.removeLayer(layer.id);
+        });
 
-      const geojson = {
-        type: 'FeatureCollection',
-        features: [
-          origin,
-          destination,
-          hoverMarker
-        ].filter((d) => {
-          return d.geometry;
-        })
-      };
+        if (map.getSource('directions')) map.removeSource('directions');
 
-      if (directions.length) {
-        directions.forEach((feature, index) => {
+        this._map = null;
+        return this;
+    }
 
-          const features = [];
+    mapState() {
+        const {profile, alternatives, congestion, styles, interactive, compile} = store.getState();
 
-          const decoded = decode(feature.geometry, 5).map(function(c) {
-            return c.reverse();
-          });
+        // Emit any default or option set config
+        this.actions.eventEmit('profile', {profile});
 
-          decoded.forEach(function(c, i) {
-            var previous = features[features.length - 1];
-            var congestion = feature.legs[0].annotation && feature.legs[0].annotation.congestion && feature.legs[0].annotation.congestion[i - 1];
-
-            if (previous && (!congestion || previous.properties.congestion === congestion)) {
-              previous.geometry.coordinates.push(c);
-            } else {
-              var segment = {
-                geometry: {
-                  type: 'LineString',
-                  coordinates: []
-                },
-                properties: {
-                  'route-index': index,
-                  route: (index === routeIndex) ? 'selected' : 'alternate',
-                }
-              };
-
-              // New segment starts with previous segment's last coordinate.
-              if (previous) segment.geometry.coordinates.push(previous.geometry.coordinates[previous.geometry.coordinates.length - 1]);
-
-              segment.geometry.coordinates.push(c);
-
-              if (congestion) {
-                segment.properties.congestion = feature.legs[0].annotation.congestion[i - 1];
-              }
-
-              features.push(segment);
+        const geojson = {
+            type: 'geojson',
+            data: {
+                type    : 'FeatureCollection',
+                features: []
             }
-          });
+        };
 
-          geojson.features = geojson.features.concat(features);
 
-          if (index === routeIndex) {
-            // Collect any possible waypoints from steps
-            feature.legs[0].steps.forEach((d) => {
-              if (d.maneuver.type === 'waypoint') {
-                geojson.features.push({
-                  type: 'Feature',
-                  geometry: d.maneuver.location,
-                  properties: {
-                    id: 'waypoint'
-                  }
+        // Add and set data theme layer/style
+        this._map.addSource('directions', geojson);
+
+        // Add direction specific styles to the map
+        if (styles && styles.length) styles.forEach((style) => this._map.addLayer(style));
+        directionsStyle.forEach((style) => {
+            // only add the default style layer if a custom layer wasn't provided
+            if (!this._map.getLayer(style.id)) this._map.addLayer(style);
+        });
+
+
+        if (interactive) {
+            this._map.on('mousedown', this.onDragDown);
+            this._map.on('mousemove', this.move);
+            this._map.on('click', this.onClick);
+
+            this._map.on('touchstart', this.move);
+            this._map.on('touchstart', this.onDragDown);
+        }
+    }
+
+    subscribedActions() {
+        if (this.options.plotRoute === false) return;
+
+        this.storeUnsubscribe = store.subscribe(() => {
+            const {
+                origin,
+                destination,
+                hoverMarker,
+                directions,
+                routeIndex
+            } = store.getState();
+
+            const geojson = {
+                type    : 'FeatureCollection',
+                features: [
+                    origin,
+                    destination,
+                    hoverMarker
+                ].filter((d) => {
+                    return d.geometry;
+                })
+            };
+
+            if (directions.length) {
+                directions.forEach((feature, index) => {
+
+                    const features = [];
+
+                    const decoded = decode(feature.geometry, 5).map(function (c) {
+                        return c.reverse();
+                    });
+
+                    decoded.forEach(function (c, i) {
+                        var previous = features[features.length - 1];
+                        var congestion = feature.legs[0].annotation && feature.legs[0].annotation.congestion && feature.legs[0].annotation.congestion[i - 1];
+
+                        if (previous && (!congestion || previous.properties.congestion === congestion)) {
+                            previous.geometry.coordinates.push(c);
+                        } else {
+                            var segment = {
+                                geometry  : {
+                                    type       : 'LineString',
+                                    coordinates: []
+                                },
+                                properties: {
+                                    'route-index': index,
+                                    route        : (index === routeIndex) ? 'selected' : 'alternate',
+                                }
+                            };
+
+                            // New segment starts with previous segment's last coordinate.
+                            if (previous) segment.geometry.coordinates.push(previous.geometry.coordinates[previous.geometry.coordinates.length - 1]);
+
+                            segment.geometry.coordinates.push(c);
+
+                            if (congestion) {
+                                segment.properties.congestion = feature.legs[0].annotation.congestion[i - 1];
+                            }
+
+                            features.push(segment);
+                        }
+                    });
+
+                    geojson.features = geojson.features.concat(features);
+
+                    if (index === routeIndex) {
+                        // Collect any possible waypoints from steps
+                        feature.legs[0].steps.forEach((d) => {
+                            if (d.maneuver.type === 'waypoint') {
+                                geojson.features.push({
+                                    type      : 'Feature',
+                                    geometry  : d.maneuver.location,
+                                    properties: {
+                                        id: 'waypoint'
+                                    }
+                                });
+                            }
+                        });
+                    }
+
                 });
-              }
+            }
+
+            if (this._map.style && this._map.getSource('directions')) {
+                this._map.getSource('directions').setData(geojson);
+            }
+
+        });
+    }
+
+    _clickHandler() {
+        var timer = null;
+        var delay = 250;
+        return function (event) {
+            if (!timer) {
+                var singleClickHandler = this._onSingleClick.bind(this);
+
+                timer = setTimeout(function () {
+                    singleClickHandler(event);
+                    timer = null;
+                }, delay);
+
+            } else {
+                clearTimeout(timer);
+                timer = null;
+                this._map.zoomIn();
+            }
+        };
+    }
+
+    _onSingleClick(e) {
+        const {origin} = store.getState();
+        const coords = [e.lngLat.lng, e.lngLat.lat];
+
+        if (!origin.geometry) {
+            this.actions.setOriginFromCoordinates(coords);
+        } else {
+
+            const features = this._map.queryRenderedFeatures(e.point, {
+                layers: [
+                    'directions-origin-point',
+                    'directions-destination-point',
+                    'directions-waypoint-point',
+                    'directions-route-line-alt'
+                ]
             });
-          }
 
-        });
-      }
+            if (features.length) {
 
-      if (this._map.style && this._map.getSource('directions')) {
-        this._map.getSource('directions').setData(geojson);
-      }
-    });
-  }
+                // Remove any waypoints
+                features.forEach((f) => {
+                    if (f.layer.id === 'directions-waypoint-point') {
+                        this.actions.removeWaypoint(f);
+                    }
+                });
 
-  _clickHandler() {
-    var timer = null;
-    var delay = 250;
-    return function(event) {
-      if (!timer) {
-        var singleClickHandler = this._onSingleClick.bind(this);
+                if (features[0].properties.route === 'alternate') {
+                    const index = features[0].properties['route-index'];
+                    this.actions.setRouteIndex(index);
+                }
+            } else {
+                this.actions.setDestinationFromCoordinates(coords);
+                if (this.options.flyTo !== false) {
+                    console.log('flying to');
+                    this._map.flyTo({center: coords});
+                }
+            }
+        }
+    }
 
-        timer = setTimeout(function() {
-          singleClickHandler(event);
-          timer = null;
-        }, delay);
+    _move(e) {
+        const {hoverMarker} = store.getState();
 
-      } else {
-        clearTimeout(timer);
-        timer = null;
-        this._map.zoomIn();
-      }
-    };
-  }
-
-  _onSingleClick(e) {
-    const { origin } = store.getState();
-    const coords = [e.lngLat.lng, e.lngLat.lat];
-
-    if (!origin.geometry) {
-      this.actions.setOriginFromCoordinates(coords);
-    } else {
-
-      const features = this._map.queryRenderedFeatures(e.point, {
-        layers: [
-          'directions-origin-point',
-          'directions-destination-point',
-          'directions-waypoint-point',
-          'directions-route-line-alt'
-        ]
-      });
-
-      if (features.length) {
-
-        // Remove any waypoints
-        features.forEach((f) => {
-          if (f.layer.id === 'directions-waypoint-point') {
-            this.actions.removeWaypoint(f);
-          }
+        const features = this._map.queryRenderedFeatures(e.point, {
+            layers: [
+                'directions-route-line-alt',
+                'directions-route-line',
+                'directions-origin-point',
+                'directions-destination-point',
+                'directions-hover-point'
+            ]
         });
 
-        if (features[0].properties.route === 'alternate') {
-          const index = features[0].properties['route-index'];
-          this.actions.setRouteIndex(index);
+        this._map.getCanvas().style.cursor = features.length ? 'pointer' : '';
+
+        if (features.length) {
+            this.isCursorOverPoint = features[0];
+            this._map.dragPan.disable();
+
+            // Add a possible waypoint marker when hovering over the active route line
+            features.forEach((feature) => {
+                if (feature.layer.id === 'directions-route-line') {
+                    this.actions.hoverMarker([e.lngLat.lng, e.lngLat.lat]);
+                } else if (hoverMarker.geometry) {
+                    this.actions.hoverMarker(null);
+                }
+            });
+
+        } else if (this.isCursorOverPoint) {
+            this.isCursorOverPoint = false;
+            this._map.dragPan.enable();
         }
-      } else {
-        this.actions.setDestinationFromCoordinates(coords);
-        this._map.flyTo({ center: coords });
-      }
     }
-  }
 
-  _move(e) {
-    const { hoverMarker } = store.getState();
+    _onDragDown() {
+        if (!this.isCursorOverPoint) return;
+        this.isDragging = this.isCursorOverPoint;
+        this._map.getCanvas().style.cursor = 'grab';
 
-    const features = this._map.queryRenderedFeatures(e.point, {
-      layers: [
-        'directions-route-line-alt',
-        'directions-route-line',
-        'directions-origin-point',
-        'directions-destination-point',
-        'directions-hover-point'
-      ]
-    });
+        this._map.on('mousemove', this.onDragMove);
+        this._map.on('mouseup', this.onDragUp);
 
-    this._map.getCanvas().style.cursor = features.length ? 'pointer' : '';
+        this._map.on('touchmove', this.onDragMove);
+        this._map.on('touchend', this.onDragUp);
+    }
 
-    if (features.length) {
-      this.isCursorOverPoint = features[0];
-      this._map.dragPan.disable();
+    _onDragMove(e) {
+        if (!this.isDragging) return;
 
-      // Add a possible waypoint marker when hovering over the active route line
-      features.forEach((feature) => {
-        if (feature.layer.id === 'directions-route-line') {
-          this.actions.hoverMarker([e.lngLat.lng, e.lngLat.lat]);
-        } else if (hoverMarker.geometry) {
-          this.actions.hoverMarker(null);
+        const coords = [e.lngLat.lng, e.lngLat.lat];
+        switch (this.isDragging.layer.id) {
+            case 'directions-origin-point':
+                this.actions.createOrigin(coords);
+                break;
+            case 'directions-destination-point':
+                this.actions.createDestination(coords);
+                break;
+            case 'directions-hover-point':
+                this.actions.hoverMarker(coords);
+                break;
         }
-      });
-
-    } else if (this.isCursorOverPoint) {
-      this.isCursorOverPoint = false;
-      this._map.dragPan.enable();
     }
-  }
 
-  _onDragDown() {
-    if (!this.isCursorOverPoint) return;
-    this.isDragging = this.isCursorOverPoint;
-    this._map.getCanvas().style.cursor = 'grab';
+    _onDragUp() {
+        if (!this.isDragging) return;
 
-    this._map.on('mousemove', this.onDragMove);
-    this._map.on('mouseup', this.onDragUp);
+        const {hoverMarker, origin, destination} = store.getState();
 
-    this._map.on('touchmove', this.onDragMove);
-    this._map.on('touchend', this.onDragUp);
-  }
-
-  _onDragMove(e) {
-    if (!this.isDragging) return;
-
-    const coords = [e.lngLat.lng, e.lngLat.lat];
-    switch (this.isDragging.layer.id) {
-      case 'directions-origin-point':
-        this.actions.createOrigin(coords);
-      break;
-      case 'directions-destination-point':
-        this.actions.createDestination(coords);
-      break;
-      case 'directions-hover-point':
-        this.actions.hoverMarker(coords);
-      break;
-    }
-  }
-
-  _onDragUp() {
-    if (!this.isDragging) return;
-
-    const { hoverMarker, origin, destination } = store.getState();
-
-    switch (this.isDragging.layer.id) {
-      case 'directions-origin-point':
-        this.actions.setOriginFromCoordinates(origin.geometry.coordinates);
-      break;
-      case 'directions-destination-point':
-        this.actions.setDestinationFromCoordinates(destination.geometry.coordinates);
-      break;
-      case 'directions-hover-point':
-        // Add waypoint if a sufficent amount of dragging has occurred.
-        if (hoverMarker.geometry && !utils.coordinateMatch(this.isDragging, hoverMarker)) {
-          this.actions.addWaypoint(0, hoverMarker);
+        switch (this.isDragging.layer.id) {
+            case 'directions-origin-point':
+                this.actions.setOriginFromCoordinates(origin.geometry.coordinates);
+                break;
+            case 'directions-destination-point':
+                this.actions.setDestinationFromCoordinates(destination.geometry.coordinates);
+                break;
+            case 'directions-hover-point':
+                // Add waypoint if a sufficent amount of dragging has occurred.
+                if (hoverMarker.geometry && !utils.coordinateMatch(this.isDragging, hoverMarker)) {
+                    this.actions.addWaypoint(0, hoverMarker);
+                }
+                break;
         }
-      break;
+
+        this.isDragging = false;
+        this._map.getCanvas().style.cursor = '';
+
+        this._map.off('touchmove', this.onDragMove);
+        this._map.off('touchend', this.onDragUp);
+
+        this._map.off('mousemove', this.onDragMove);
+        this._map.off('mouseup', this.onDragUp);
     }
 
-    this.isDragging = false;
-    this._map.getCanvas().style.cursor = '';
+    // API Methods
+    // ============================
 
-    this._map.off('touchmove', this.onDragMove);
-    this._map.off('touchend', this.onDragUp);
+    /**
+     * Turn on or off interactivity
+     * @param {Boolean} state sets interactivity based on a state of `true` or `false`.
+     * @returns {MapboxDirections} this
+     */
+    interactive(state) {
+        if (state) {
+            this._map.on('touchstart', this.move);
+            this._map.on('touchstart', this.onDragDown);
 
-    this._map.off('mousemove', this.onDragMove);
-    this._map.off('mouseup', this.onDragUp);
-  }
+            this._map.on('mousedown', this.onDragDown);
+            this._map.on('mousemove', this.move);
+            this._map.on('click', this.onClick);
+        } else {
+            this._map.off('touchstart', this.move);
+            this._map.off('touchstart', this.onDragDown);
 
-  // API Methods
-  // ============================
+            this._map.off('mousedown', this.onDragDown);
+            this._map.off('mousemove', this.move);
+            this._map.off('click', this.onClick);
+        }
 
-  /**
-   * Turn on or off interactivity
-   * @param {Boolean} state sets interactivity based on a state of `true` or `false`.
-   * @returns {MapboxDirections} this
-   */
-  interactive(state) {
-    if (state) {
-      this._map.on('touchstart', this.move);
-      this._map.on('touchstart', this.onDragDown);
-
-      this._map.on('mousedown', this.onDragDown);
-      this._map.on('mousemove', this.move);
-      this._map.on('click', this.onClick);
-    } else {
-      this._map.off('touchstart', this.move);
-      this._map.off('touchstart', this.onDragDown);
-
-      this._map.off('mousedown', this.onDragDown);
-      this._map.off('mousemove', this.move);
-      this._map.off('click', this.onClick);
+        return this;
     }
 
-    return this;
-  }
-
-  /**
-   * Returns the origin of the current route.
-   * @returns {Object} origin
-   */
-  getOrigin() {
-    return store.getState().origin;
-  }
-
-  /**
-   * Sets origin. _Note:_ calling this method requires the [map load event](https://www.mapbox.com/mapbox-gl-js/api/#Map.load)
-   * to have run.
-   * @param {Array<number>|String} query An array of coordinates [lng, lat] or location name as a string.
-   * @returns {MapboxDirections} this
-   */
-  setOrigin(query) {
-    if (typeof query === 'string') {
-      this.actions.queryOrigin(query);
-    } else {
-      this.actions.setOriginFromCoordinates(query);
+    /**
+     * Returns the origin of the current route.
+     * @returns {Object} origin
+     */
+    getOrigin() {
+        return store.getState().origin;
     }
 
-    return this;
-  }
+    /**
+     * Sets origin. _Note:_ calling this method requires the [map load event](https://www.mapbox.com/mapbox-gl-js/api/#Map.load)
+     * to have run.
+     * @param {Array<number>|String} query An array of coordinates [lng, lat] or location name as a string.
+     * @returns {MapboxDirections} this
+     */
+    setOrigin(query) {
+        if (typeof query === 'string') {
+            this.actions.queryOrigin(query);
+        } else {
+            this.actions.setOriginFromCoordinates(query);
+        }
 
-  /**
-   * Returns the destination of the current route.
-   * @returns {Object} destination
-   */
-  getDestination() {
-    return store.getState().destination;
-  }
-
-  /**
-   * Sets destination. _Note:_ calling this method requires the [map load event](https://www.mapbox.com/mapbox-gl-js/api/#Map.load)
-   * to have run.
-   * @param {Array<number>|String} query An array of coordinates [lng, lat] or location name as a string.
-   * @returns {MapboxDirections} this
-   */
-  setDestination(query) {
-    if (typeof query === 'string') {
-      this.actions.queryDestination(query);
-    } else {
-      this.actions.setDestinationFromCoordinates(query);
+        return this;
     }
 
-    return this;
-  }
+    clearOrigin() {
+        this.actions.clearOrigin();
 
-  /**
-   * Swap the origin and destination.
-   * @returns {MapboxDirections} this
-   */
-  reverse() {
-    this.actions.reverse();
-    return this;
-  }
+        let originClearButton = document.querySelector('#mapbox-directions-origin-input .geocoder-icon-close');
+        if (originClearButton) {
+            originClearButton.click();
+        }
 
-  /**
-   * Add a waypoint to the route. _Note:_ calling this method requires the
-   * [map load event](https://www.mapbox.com/mapbox-gl-js/api/#Map.load) to have run.
-   * @param {Number} index position waypoint should be placed in the waypoint array
-   * @param {Array<number>|Point} waypoint can be a GeoJSON Point Feature or [lng, lat] coordinates.
-   * @returns {MapboxDirections} this;
-   */
-  addWaypoint(index, waypoint) {
-    if (!waypoint.type) waypoint = utils.createPoint(waypoint, { id: 'waypoint' });
-    this.actions.addWaypoint(index, waypoint);
-    return this;
-  }
+        return this;
+    }
 
-  /**
-   * Change the waypoint at a given index in the route. _Note:_ calling this
-   * method requires the [map load event](https://www.mapbox.com/mapbox-gl-js/api/#Map.load)
-   * to have run.
-   * @param {Number} index indexed position of the waypoint to update
-   * @param {Array<number>|Point} waypoint can be a GeoJSON Point Feature or [lng, lat] coordinates.
-   * @returns {MapboxDirections} this;
-   */
-  setWaypoint(index, waypoint) {
-    if (!waypoint.type) waypoint = utils.createPoint(waypoint, { id: 'waypoint' });
-    this.actions.setWaypoint(index, waypoint);
-    return this;
-  }
+    setProfile(profile) {
+        this.actions.setProfile(profile);
+        return this;
+    }
 
-  /**
-   * Remove a waypoint from the route.
-   * @param {Number} index position in the waypoints array.
-   * @returns {MapboxDirections} this;
-   */
-  removeWaypoint(index) {
-    const { waypoints } = store.getState();
-    this.actions.removeWaypoint(waypoints[index]);
-    return this;
-  }
+    /**
+     * Returns the destination of the current route.
+     * @returns {Object} destination
+     */
+    getDestination() {
+        return store.getState().destination;
+    }
 
-  /**
-   * Fetch all current waypoints in a route.
-   * @returns {Array} waypoints
-   */
-  getWaypoints() {
-    return store.getState().waypoints;
-  }
+    clearDestination() {
+        this.actions.clearDestination();
 
-  /**
-   * Removes all routes and waypoints from the map.
-   *
-   * @returns {MapboxDirections} this;
-   */
-  removeRoutes() {
-    this.actions.clearOrigin();
-    this.actions.clearDestination();
-    return this;
-  }
+        let destinationClearButton = document.querySelector('#mapbox-directions-destination-input .geocoder-icon-close');
+        if (destinationClearButton) {
+            destinationClearButton.click();
+        }
+        return this;
+    }
 
-  /**
-   * Subscribe to events that happen within the plugin.
-   * @param {String} type name of event. Available events and the data passed into their respective event objects are:
-   *
-   * - __clear__ `{ type: } Type is one of 'origin' or 'destination'`
-   * - __loading__ `{ type: } Type is one of 'origin' or 'destination'`
-   * - __profile__ `{ profile } Profile is one of 'driving', 'walking', or 'cycling'`
-   * - __origin__ `{ feature } Fired when origin is set`
-   * - __destination__ `{ feature } Fired when destination is set`
-   * - __route__ `{ route } Fired when a route is updated`
-   * - __error__ `{ error } Error as string`
-   * @param {Function} fn function that's called when the event is emitted.
-   * @returns {MapboxDirections} this;
-   */
-  on(type, fn) {
-    this.actions.eventSubscribe(type, fn);
-    return this;
-  }
+    /**
+     * Sets destination. _Note:_ calling this method requires the [map load event](https://www.mapbox.com/mapbox-gl-js/api/#Map.load)
+     * to have run.
+     * @param {Array<number>|String} query An array of coordinates [lng, lat] or location name as a string.
+     * @returns {MapboxDirections} this
+     */
+    setDestination(query) {
+        if (typeof query === 'string') {
+            this.actions.queryDestination(query);
+        } else {
+            this.actions.setDestinationFromCoordinates(query);
+        }
+
+        return this;
+    }
+
+    /**
+     * Swap the origin and destination.
+     * @returns {MapboxDirections} this
+     */
+    reverse() {
+        this.actions.reverse();
+        return this;
+    }
+
+    /**
+     * Add a waypoint to the route. _Note:_ calling this method requires the
+     * [map load event](https://www.mapbox.com/mapbox-gl-js/api/#Map.load) to have run.
+     * @param {Number} index position waypoint should be placed in the waypoint array
+     * @param {Array<number>|Point} waypoint can be a GeoJSON Point Feature or [lng, lat] coordinates.
+     * @returns {MapboxDirections} this;
+     */
+    addWaypoint(index, waypoint) {
+        if (!waypoint.type) waypoint = utils.createPoint(waypoint, {id: 'waypoint'});
+        this.actions.addWaypoint(index, waypoint);
+        return this;
+    }
+
+    /**
+     * Change the waypoint at a given index in the route. _Note:_ calling this
+     * method requires the [map load event](https://www.mapbox.com/mapbox-gl-js/api/#Map.load)
+     * to have run.
+     * @param {Number} index indexed position of the waypoint to update
+     * @param {Array<number>|Point} waypoint can be a GeoJSON Point Feature or [lng, lat] coordinates.
+     * @returns {MapboxDirections} this;
+     */
+    setWaypoint(index, waypoint) {
+        if (!waypoint.type) waypoint = utils.createPoint(waypoint, {id: 'waypoint'});
+        this.actions.setWaypoint(index, waypoint);
+        return this;
+    }
+
+    /**
+     * Remove a waypoint from the route.
+     * @param {Number} index position in the waypoints array.
+     * @returns {MapboxDirections} this;
+     */
+    removeWaypoint(index) {
+        const {waypoints} = store.getState();
+        this.actions.removeWaypoint(waypoints[index]);
+        return this;
+    }
+
+    /**
+     * Fetch all current waypoints in a route.
+     * @returns {Array} waypoints
+     */
+    getWaypoints() {
+        return store.getState().waypoints;
+    }
+
+    /**
+     * Removes all routes and waypoints from the map.
+     *
+     * @returns {MapboxDirections} this;
+     */
+    removeRoutes() {
+        // this.actions.clearOrigin();
+        // this.actions.clearDestination();
+        this.clearOrigin();
+        this.clearDestination();
+
+        return this;
+    }
+
+    /**
+     * Subscribe to events that happen within the plugin.
+     * @param {String} type name of event. Available events and the data passed into their respective event objects are:
+     *
+     * - __clear__ `{ type: } Type is one of 'origin' or 'destination'`
+     * - __loading__ `{ type: } Type is one of 'origin' or 'destination'`
+     * - __profile__ `{ profile } Profile is one of 'driving', 'walking', or 'cycling'`
+     * - __origin__ `{ feature } Fired when origin is set`
+     * - __destination__ `{ feature } Fired when destination is set`
+     * - __route__ `{ route } Fired when a route is updated`
+     * - __error__ `{ error } Error as string`
+     * @param {Function} fn function that's called when the event is emitted.
+     * @returns {MapboxDirections} this;
+     */
+    on(type, fn) {
+        this.actions.eventSubscribe(type, fn);
+        return this;
+    }
 }

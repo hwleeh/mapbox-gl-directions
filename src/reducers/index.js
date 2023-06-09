@@ -16,6 +16,10 @@ const initialState = {
   compile: null,
   proximity: false,
   styles: [],
+  forceStart: false,
+  plotRoute: true,
+  fetchDirections: true,
+  // geometries: 'polyline',
 
   // UI controls
   controls: {
@@ -46,7 +50,7 @@ const initialState = {
 
   // Directions data
   directions: [],
-  routeIndex: 0, 
+  routeIndex: 0,
   routePadding: 80
 };
 
